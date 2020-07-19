@@ -25,8 +25,8 @@ const ISSUES_URL: &str =
 
 #[derive(Debug, Deserialize)]
 struct Issue {
-    html_url: String,
     body: String,
+    html_url: String,
 }
 
 lazy_static! {
@@ -92,7 +92,7 @@ enum CompilationResult {
 
 impl std::fmt::Display for CompilationResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use colored::*;
+        use colored::Colorize;
         match *self {
             Self::Compiled => write!(f, "{:20}", "compiled".green()),
             Self::Failed => write!(f, "{:20}", "failed".yellow()),
@@ -148,7 +148,7 @@ lazy_static! {
 }
 
 fn print_row(html_url: &str, results: Vec<CompilationResult>) {
-    use colored::*;
+    use colored::Colorize;
     use prettytable::{format, Cell, Row, Table};
 
     let changed = !results.windows(2).all(|w| w[0] == w[1]);
