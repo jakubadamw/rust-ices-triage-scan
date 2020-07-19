@@ -100,6 +100,7 @@ enum CompilationResult {
     ICE,
     Failed,
     Compiled,
+    ToolchainMissing,
 }
 
 impl std::fmt::Display for CompilationResult {
@@ -109,6 +110,7 @@ impl std::fmt::Display for CompilationResult {
             Self::Compiled => write!(f, "{:20}", "compiled".green()),
             Self::Failed => write!(f, "{:20}", "failed".yellow()),
             Self::ICE => write!(f, "{:20}", "ICE".red()),
+            Self::ToolchainMissing => write!(f, "{:20}", "toolchain missing".blue()),
         }
     }
 }
@@ -142,7 +144,9 @@ async fn run_test(toolchain: &str, input: &str) -> Result<CompilationResult, Err
         CompilationResult::Compiled
     } else {
         let buffer = std::fs::read_to_string(&stdout_path)?;
-        if buffer.contains("internal compiler error") {
+        if buffer.contains("toolchain") && buffer.contains("is not installed") {
+            CompilationResult::ToolchainMissing
+        } else if buffer.contains("internal compiler error") {
             CompilationResult::ICE
         } else {
             CompilationResult::Failed
