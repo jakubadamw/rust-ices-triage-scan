@@ -17,6 +17,10 @@ quick_error! {
         PathPersist(err: tempfile::PathPersistError) { from() }
         Persist(err: tempfile::PersistError) { from() }
         Reqwest(err: reqwest::Error) { from() }
+        Serde(text: String, err: serde_json::Error) {
+            context(text: String, err: serde_json::Error)
+                -> (text, err)
+        }
     }
 }
 
@@ -40,43 +44,51 @@ fn get_mcves<'i>(issue: &'i Issue) -> impl Iterator<Item = String> + 'i {
         .map(|c| c["snippet"].trim().to_owned())
 }
 
+#[allow(clippy::find_map)]
 fn get_next_link(response: &reqwest::Response) -> Option<String> {
     response
         .headers()
         .get("Link")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .map(|link_str| {
-                    let mut parts = link_str.split(';').map(str::trim);
+        .and_then(|value| value
+            .split(',')
+            .map(str::trim)
+            .map(|link_str| {
+                let mut parts = link_str.split(';').map(str::trim);
 
-                    let mut url = parts.next().unwrap();
-                    assert!(url.starts_with('<'));
-                    assert!(url.ends_with('>'));
-                    url = &url[1..url.len() - 1];
+                let mut url = parts.next().unwrap();
+                assert!(url.starts_with('<'));
+                assert!(url.ends_with('>'));
+                url = &url[1..url.len() - 1];
 
-                    let mut rel = parts.next().unwrap();
-                    assert!(rel.starts_with("rel=\""));
-                    assert!(rel.ends_with('"'));
-                    rel = &rel[5..rel.len() - 1];
+                let mut rel = parts.next().unwrap();
+                assert!(rel.starts_with("rel=\""));
+                assert!(rel.ends_with('"'));
+                rel = &rel[5..rel.len() - 1];
 
-                    (rel, url)
-                })
-                .find(|(rel, _)| *rel == "next")
-        })
-        .map(|(_, url)| url.to_owned())
+                (rel, url)
+            })
+            .find(|(rel, _)| *rel == "next")
+            .map(|(_, url)| url))
+        .map(str::to_string)
 }
 
 #[try_stream(ok = Issue, error = Error)]
 async fn get_issues() {
+    use quick_error::ResultExt;
+
     let mut next_url = Some(ISSUES_URL.to_owned());
 
     while let Some(url) = next_url {
-        let response = reqwest::get(&url).await?;
+        let response = reqwest::Client::new()
+            .get(&url)
+            .header("User-Agent", "rust-ices-triage-scan")
+            .send()
+            .await?;
+
         next_url = get_next_link(&response);
-        let issues: Vec<Issue> = response.json().await?;
+        let text = response.text().await?;
+        let issues: Vec<Issue> = serde_json::from_str(&text).context(text)?;
         for issue in issues {
             yield issue;
         }
