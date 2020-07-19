@@ -4,44 +4,24 @@
 
 #[macro_use]
 extern crate lazy_static;
+#[macro_use]
+extern crate quick_error;
 
-use futures_async_stream::{async_try_stream, for_await};
+use futures_async_stream::{try_stream, for_await};
 use serde::Deserialize;
+
+quick_error! {
+    #[derive(Debug)]
+    pub enum Error {
+        Io(err: std::io::Error) { from() }
+        PathPersist(err: tempfile::PathPersistError) { from() }
+        Persist(err: tempfile::PersistError) { from() }
+        Reqwest(err: reqwest::Error) { from() }
+    }
+}
 
 const ISSUES_URL: &str =
     "https://api.github.com/repos/rust-lang/rust/issues?labels=I-ice&state=open";
-
-#[derive(Debug)]
-enum Error {
-    Io(std::io::Error),
-    PathPersist(tempfile::PathPersistError),
-    Persist(tempfile::PersistError),
-    Surf(surf::Exception),
-}
-
-impl std::convert::From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl std::convert::From<tempfile::PathPersistError> for Error {
-    fn from(e: tempfile::PathPersistError) -> Self {
-        Self::PathPersist(e)
-    }
-}
-
-impl std::convert::From<tempfile::PersistError> for Error {
-    fn from(e: tempfile::PersistError) -> Self {
-        Self::Persist(e)
-    }
-}
-
-impl std::convert::From<surf::Exception> for Error {
-    fn from(e: surf::Exception) -> Self {
-        Self::Surf(e)
-    }
-}
 
 #[derive(Debug, Deserialize)]
 struct Issue {
@@ -60,9 +40,11 @@ fn get_mcves<'i>(issue: &'i Issue) -> impl Iterator<Item = String> + 'i {
         .map(|c| c["snippet"].trim().to_owned())
 }
 
-fn get_next_link(response: &surf::Response) -> Option<String> {
+fn get_next_link(response: &reqwest::Response) -> Option<String> {
     response
-        .header("Link")
+        .headers()
+        .get("Link")
+        .and_then(|value| value.to_str().ok())
         .and_then(|value| {
             value
                 .split(',')
@@ -87,17 +69,17 @@ fn get_next_link(response: &surf::Response) -> Option<String> {
         .map(|(_, url)| url.to_owned())
 }
 
-#[async_try_stream(ok = Issue, error = Error)]
+#[try_stream(ok = Issue, error = Error)]
 async fn get_issues() {
     let mut next_url = Some(ISSUES_URL.to_owned());
 
     while let Some(url) = next_url {
-        let mut response = surf::get(url).await?;
-        let issues: Vec<Issue> = response.body_json().await?;
+        let response = reqwest::get(&url).await?;
+        next_url = get_next_link(&response);
+        let issues: Vec<Issue> = response.json().await?;
         for issue in issues {
             yield issue;
         }
-        next_url = get_next_link(&response);
     }
 }
 
@@ -120,7 +102,7 @@ impl std::fmt::Display for CompilationResult {
 }
 
 async fn run_test(toolchain: &str, input: &str) -> Result<CompilationResult, Error> {
-    use tokio::net::process::Command;
+    use tokio::process::Command;
 
     let (stdin, stdin_path) = tempfile::NamedTempFile::new()?.keep()?;
     std::fs::write(&stdin_path, input)?;
@@ -158,12 +140,12 @@ async fn run_test(toolchain: &str, input: &str) -> Result<CompilationResult, Err
     Ok(result)
 }
 
-const TOOLCHAINS: &[&str] = &[
-    "nightly-2019-02-01",
-    "nightly-2019-09-01",
-    "nightly-2019-10-01",
-    "nightly",
-];
+lazy_static! {
+    static ref TOOLCHAINS: Vec<String> = std::env::args()
+        .skip(1)
+        .map(|name| format!("nightly-{}", name))
+        .collect();
+}
 
 fn print_row(html_url: &str, results: Vec<CompilationResult>) {
     use colored::*;
